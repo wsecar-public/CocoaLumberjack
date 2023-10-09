@@ -48,6 +48,11 @@
 
 #define NSLogDebug(frmt, ...) do{ if(DD_DEBUG) NSLog((frmt), ##__VA_ARGS__); } while(0)
 
+#define DDLogAssertOnGlobalLoggingQueue() \
+NSAssert(dispatch_get_specific(GlobalLoggingQueueIdentityKey), @"This method must be called on the logging thread/queue!")
+#define DDLogAssertNotOnGlobalLoggingQueue() \
+NSAssert(!dispatch_get_specific(GlobalLoggingQueueIdentityKey), @"This method must not be called on the logging thread/queue!")
+
 // The "global logging queue" refers to [DDLog loggingQueue].
 // It is the queue that all log statements go through.
 //
@@ -450,12 +455,12 @@ static NSUInteger _numProcessors;
 }
 
 - (void)flushLog {
-    NSAssert(!dispatch_get_specific(GlobalLoggingQueueIdentityKey),
-             @"This method shouldn't be run on the logging thread/queue that make flush fast enough");
-    
-    dispatch_sync(_loggingQueue, ^{ @autoreleasepool {
-        [self lt_flush];
-    } });
+    DDLogAssertNotOnGlobalLoggingQueue();
+    dispatch_sync(_loggingQueue, ^{
+        @autoreleasepool {
+            [self lt_flush];
+        }
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -624,15 +629,13 @@ static NSUInteger _numProcessors;
     // Need to create loggerQueue if loggerNode doesn't provide one.
 
     for (DDLoggerNode *node in self._loggers) {
-        if (node->_logger == logger
-            && node->_level == level) {
+        if (node->_logger == logger && node->_level == level) {
             // Exactly same logger already added, exit
             return;
         }
     }
 
-    NSAssert(dispatch_get_specific(GlobalLoggingQueueIdentityKey),
-             @"This method should only be run on the logging thread/queue");
+    DDLogAssertOnGlobalLoggingQueue();
 
     dispatch_queue_t loggerQueue = NULL;
     if ([logger respondsToSelector:@selector(loggerQueue)]) {
@@ -669,8 +672,7 @@ static NSUInteger _numProcessors;
 - (void)lt_removeLogger:(id <DDLogger>)logger {
     // Find associated loggerNode in list of added loggers
 
-    NSAssert(dispatch_get_specific(GlobalLoggingQueueIdentityKey),
-             @"This method should only be run on the logging thread/queue");
+    DDLogAssertOnGlobalLoggingQueue();
 
     DDLoggerNode *loggerNode = nil;
 
@@ -698,8 +700,7 @@ static NSUInteger _numProcessors;
 }
 
 - (void)lt_removeAllLoggers {
-    NSAssert(dispatch_get_specific(GlobalLoggingQueueIdentityKey),
-             @"This method should only be run on the logging thread/queue");
+    DDLogAssertOnGlobalLoggingQueue();
 
     // Notify all loggers
     for (DDLoggerNode *loggerNode in self._loggers) {
@@ -716,8 +717,7 @@ static NSUInteger _numProcessors;
 }
 
 - (NSArray *)lt_allLoggers {
-    NSAssert(dispatch_get_specific(GlobalLoggingQueueIdentityKey),
-             @"This method should only be run on the logging thread/queue");
+    DDLogAssertOnGlobalLoggingQueue();
 
     NSMutableArray *theLoggers = [NSMutableArray new];
 
@@ -729,8 +729,7 @@ static NSUInteger _numProcessors;
 }
 
 - (NSArray *)lt_allLoggersWithLevel {
-    NSAssert(dispatch_get_specific(GlobalLoggingQueueIdentityKey),
-             @"This method should only be run on the logging thread/queue");
+    DDLogAssertOnGlobalLoggingQueue();
 
     NSMutableArray *theLoggersWithLevel = [NSMutableArray new];
 
@@ -743,10 +742,9 @@ static NSUInteger _numProcessors;
 }
 
 - (void)lt_log:(DDLogMessage *)logMessage {
-    // Execute the given log message on each of our loggers.
+    DDLogAssertOnGlobalLoggingQueue();
 
-    NSAssert(dispatch_get_specific(GlobalLoggingQueueIdentityKey),
-             @"This method should only be run on the logging thread/queue");
+    // Execute the given log message on each of our loggers.
 
     if (_numProcessors > 1) {
         // Execute each logger concurrently, each within its own queue.
@@ -808,8 +806,7 @@ static NSUInteger _numProcessors;
     // Now we need to propagate the flush request to any loggers that implement the flush method.
     // This is designed for loggers that buffer IO.
 
-    NSAssert(dispatch_get_specific(GlobalLoggingQueueIdentityKey),
-             @"This method should only be run on the logging thread/queue");
+    DDLogAssertOnGlobalLoggingQueue();
 
     for (DDLoggerNode *loggerNode in self._loggers) {
         if ([loggerNode->_logger respondsToSelector:@selector(flush)]) {
@@ -901,9 +898,9 @@ NSString * __nullable DDExtractFileNameWithoutExtension(const char *filePath, BO
 
         if (loggerQueue) {
             _loggerQueue = loggerQueue;
-            #if !OS_OBJECT_USE_OBJC
+#if !OS_OBJECT_USE_OBJC
             dispatch_retain(loggerQueue);
-            #endif
+#endif
         }
 
         _level = level;
@@ -916,11 +913,11 @@ NSString * __nullable DDExtractFileNameWithoutExtension(const char *filePath, BO
 }
 
 - (void)dealloc {
-    #if !OS_OBJECT_USE_OBJC
+#if !OS_OBJECT_USE_OBJC
     if (_loggerQueue) {
         dispatch_release(_loggerQueue);
     }
-    #endif
+#endif
 }
 
 @end
@@ -1180,13 +1177,11 @@ NS_INLINE BOOL _nullable_strings_equal(NSString* _Nullable lhs, NSString* _Nulla
 }
 
 - (void)dealloc {
-    #if !OS_OBJECT_USE_OBJC
-
+#if !OS_OBJECT_USE_OBJC
     if (_loggerQueue) {
         dispatch_release(_loggerQueue);
     }
-
-    #endif
+#endif
 }
 
 - (void)logMessage:(DDLogMessage * __attribute__((unused)))logMessage {
@@ -1243,8 +1238,7 @@ NS_INLINE BOOL _nullable_strings_equal(NSString* _Nullable lhs, NSString* _Nulla
     // This is the intended result. Fix it by accessing the ivar directly.
     // Great strides have been take to ensure this is safe to do. Plus it's MUCH faster.
 
-    NSAssert(![self isOnGlobalLoggingQueue], @"Core architecture requirement failure");
-    NSAssert(![self isOnInternalLoggerQueue], @"MUST access ivar directly, NOT via self.* syntax.");
+    DDAbstractLoggerAssertLockedPropertyAccess();
 
     dispatch_queue_t globalLoggingQueue = [DDLog loggingQueue];
 
@@ -1262,8 +1256,7 @@ NS_INLINE BOOL _nullable_strings_equal(NSString* _Nullable lhs, NSString* _Nulla
 - (void)setLogFormatter:(id <DDLogFormatter>)logFormatter {
     // The design of this method is documented extensively in the logFormatter message (above in code).
 
-    NSAssert(![self isOnGlobalLoggingQueue], @"Core architecture requirement failure");
-    NSAssert(![self isOnInternalLoggerQueue], @"MUST access ivar directly, NOT via self.* syntax.");
+    DDAbstractLoggerAssertLockedPropertyAccess();
 
     dispatch_block_t block = ^{
         @autoreleasepool {
@@ -1302,7 +1295,6 @@ NS_INLINE BOOL _nullable_strings_equal(NSString* _Nullable lhs, NSString* _Nulla
 
 - (BOOL)isOnInternalLoggerQueue {
     void *key = (__bridge void *)self;
-
     return (dispatch_get_specific(key) != NULL);
 }
 
